@@ -1,0 +1,64 @@
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.4.1
+    container_name: zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+
+  kafka:
+    image: confluentinc/cp-kafka:7.4.1
+    container_name: kafka
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: "zookeeper:2181"
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT
+      # Advertise the broker internally to other containers as "kafka:9092"
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+    # Healthcheck to ensure Kafka is actually listening on 9092
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "9092"]
+      interval: 5s
+      timeout: 5s
+      retries: 6
+
+  # One-shot container to create the topic once Kafka is healthy
+  topic-init:
+    image: confluentinc/cp-kafka:7.4.1
+    container_name: topic-init
+    depends_on:
+      kafka:
+        condition: service_healthy
+    # Single-line command: create a topic, then echo success
+    command: >
+      bash -c "kafka-topics --create --topic candy_prices_raw --partitions 1
+      --replication-factor 1 --if-not-exists
+      --bootstrap-server kafka:9092 && echo 'Topic created successfully!'"
+    restart: "no"
+
+  candyflow-producer:
+    build: ./candyflow-producer
+    container_name: candyflow-producer
+    depends_on:
+      kafka:
+        condition: service_healthy
+      topic-init:
+        condition: service_completed_successfully
+
+  candyflow-consumer:
+    build: ./candyflow-consumer
+    container_name: candyflow-consumer
+    depends_on:
+      kafka:
+        condition: service_healthy
+      topic-init:
+        condition: service_completed_successfully
+    ports:
+      - "8080:8080"
